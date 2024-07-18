@@ -16,7 +16,7 @@ spec:
         app: devsecops
     spec:
       containers:
-      - image: replace
+      - image: wahidc7/numeric-app-demo:1.0
         name: devsecops-container
 ---
 apiVersion: v1
