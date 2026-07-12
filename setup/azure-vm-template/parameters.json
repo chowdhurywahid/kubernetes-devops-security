@@ -76,7 +76,7 @@
             "value": "Static"
         },
         "publicIpAddressSku": {
-            "value": "Basic"
+            "value": "Standard"
         },
         "virtualMachineName": {
             "value": "devsecops-cloud"
