@@ -141,15 +141,6 @@ systemctl daemon-reload
 systemctl enable --now jenkins
 systemctl restart jenkins
 
-#setup kubeconfig
-# 1. Create the .kube directory in your home folder
-mkdir -p ~/.kube
-
-# 2. Copy the admin config from the secure system directory
-sudo cp -i /etc/kubernetes/admin.conf ~/.kube/config
-
-# 3. Change ownership of the file from root to your user account
-sudo chown $(id -u):$(id -g) ~/.kube/config
 
 echo "========================================"
 echo "INSTALLATION COMPLETE"
