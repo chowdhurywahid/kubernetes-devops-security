@@ -1,94 +1,85 @@
-#!/bin/bash
+#!/usr/bin/env bashset -Eeuo pipefail
 
-echo ".........----------------#################._.-.-INSTALL-.-._.#################----------------........."
-PS1='\[\e[01;36m\]\u\[\e[01;37m\]@\[\e[01;33m\]\H\[\e[01;37m\]:\[\e[01;32m\]\w\[\e[01;37m\]\$\[\033[0;37m\] '
-echo "PS1='\[\e[01;36m\]\u\[\e[01;37m\]@\[\e[01;33m\]\H\[\e[01;37m\]:\[\e[01;32m\]\w\[\e[01;37m\]\$\[\033[0;37m\] '" >> ~/.bashrc
-sed -i '1s/^/force_color_prompt=yes\n/' ~/.bashrc
+K8S_MINOR="v1.30"CALICO_MANIFEST="https://raw.githubusercontent.com/projectcalico/calico/v3.26.1/manifests/calico.yaml"
 
-# Note: sourcing from a non-interactive script won't change your current terminal window's prompt instantly, but it will work on next login.
-apt-get autoremove -y # removes the packages that are no longer needed
-apt-get update
-systemctl daemon-reload
+if [[ $EUID -ne 0 ]]; thenecho "Run this script as root."exit 1fi
 
-# --- MODERN KUBERNETES SETUP (v1.30) ---
-mkdir -p /etc/apt/keyrings
-curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.30/deb/Release.key | gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
-echo 'deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.30/deb/ /' | tee /etc/apt/sources.list.d/kubernetes.list
-apt-get update
+export DEBIAN_FRONTEND=noninteractive
 
-# Note: Modern pkgs.k8s.io builds bundles dependencies accurately. We install the stable v1.30 native packages.
-apt-get install -y docker.io vim build-essential jq python3-pip kubelet kubectl kubeadm
-pip3 install jc
+echo "Installing required packages..."
 
-### UUID of VM ###
-# comment below line if this Script is not executed on Cloud based VMs
-jc dmidecode | jq .[1].values.uuid -r
+swapoff -ased -ri '/\sswap\s/s/^#?/#/' /etc/fstab
 
-cat > /etc/docker/daemon.json <<EOF
-{
-  "exec-opts": ["native.cgroupdriver=systemd"],
-  "log-driver": "json-file",
-  "storage-driver": "overlay2"
-}
-EOF
+apt-get updateapt-get autoremove -yapt-get install -y ca-certificates curl gpg jq vim build-essential python3-pip dmidecode containerd docker.io openjdk-17-jdk maven
 
-mkdir -p /etc/systemd/system/docker.service.d
-systemctl daemon-reload
-systemctl restart docker
-systemctl enable docker
-systemctl enable kubelet
-systemctl start kubelet
+echo "System UUID:"dmidecode -s system-uuid || true
 
-echo ".........----------------#################._.-.-KUBERNETES-.-._.#################----------------........."
-rm -f /root/.kube/config
-kubeadm reset -f
+cat > /etc/modules-load.d/kubernetes.conf <<'EOF'overlaybr_netfilterEOF
 
-# Initialize using the modern configuration
-kubeadm init --kubernetes-version=1.30.0 --skip-token-print
+modprobe overlaymodprobe br_netfilter
 
-mkdir -p ~/.kube
-cp -i /etc/kubernetes/admin.conf ~/.kube/config
-chown $(id -u):$(id -g) ~/.kube/config
+cat > /etc/sysctl.d/kubernetes.conf <<'EOF'net.bridge.bridge-nf-call-iptables = 1net.bridge.bridge-nf-call-ip6tables = 1net.ipv4.ip_forward = 1EOF
 
-# Deploying alternative stable pod network configuration (Weave is deprecated, using Calico standard for modern cluster architectures)
-kubectl apply -f https://raw.githubusercontent.com/projectcalico/calico/v3.26.1/manifests/calico.yaml
-sleep 60
+sysctl --system
 
-echo "untaint controlplane node"
-# Updated target taints to align with modern Kubernetes versions (master label changed entirely to control-plane)
-kubectl taints node $(kubectl get nodes -o=jsonpath='{.items[].metadata.name}') node.kubernetes.io/not-ready:NoSchedule- || true
-kubectl taints node $(kubectl get nodes -o=jsonpath='{.items[].metadata.name}') node-role.kubernetes.io/master:NoSchedule- || true
-kubectl taints node $(kubectl get nodes -o=jsonpath='{.items[].metadata.name}') node-role.kubernetes.io/control-plane:NoSchedule- || true
-kubectl get node -o wide
+echo "Configuring containerd..."
 
-echo ".........----------------#################._.-.-Java and MAVEN-.-._.#################----------------........."
-# Installing both Java 11 (for Maven project runtime matching your log) and Java 17 (Required by modern Jenkins)
-apt install -y openjdk-11-jdk openjdk-17-jdk
-java -version
-apt install -y maven
-mvn -v
+mkdir -p /etc/containerdcontainerd config default > /etc/containerd/config.tomlsed -i 's/SystemdCgroup = false/SystemdCgroup = true/' /etc/containerd/config.toml
 
-echo ".........----------------#################._.-.-JENKINS-.-._.#################----------------........."
-# Create the secure keyring directory structure
+systemctl daemon-reloadsystemctl enable --now containerd
+
+echo "Configuring Docker..."
+
+mkdir -p /etc/dockercat > /etc/docker/daemon.json <<'EOF'{"exec-opts": ["native.cgroupdriver=systemd"],"log-driver": "json-file","storage-driver": "overlay2"}EOF
+
+systemctl restart dockersystemctl enable docker
+
+echo "Installing Kubernetes..."
+
 mkdir -p /etc/apt/keyrings
 
-# Download the authentic 2026 cryptographic signing key
-wget -O /etc/apt/keyrings/jenkins-keyring.asc https://jenkins.io
+curl -fsSL "https://pkgs.k8s.io/core:/stable:/${K8S_MINOR}/deb/Release.key" | gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
 
-# Overwrite the package manager source list with the matching key descriptor path
-echo "deb [signed-by=/etc/apt/keyrings/jenkins-keyring.asc] https://pkg.jenkins.io/debian-stable binary/" | tee /etc/apt/sources.list.d/jenkins.list
+echo "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/${K8S_MINOR}/deb/ /" 
 
-# Complete package update index scan and app deployment
-apt update
-apt install -y fontconfig jenkins
+/etc/apt/sources.list.d/kubernetes.list
 
-systemctl daemon-reload
-systemctl enable jenkins
-systemctl start jenkins
+apt-get updateapt-get install -y kubelet kubeadm kubectlapt-mark hold kubelet kubeadm kubectl
 
-# Ensure docker group exists before adding Jenkins to it
-groupadd -f docker
-usermod -a -G docker jenkins
-echo "jenkins ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
+systemctl enable --now kubelet
 
-echo ".........----------------#################._.-.-COMPLETED-.-._.#################----------------........."
+echo "Resetting previous Kubernetes configuration..."
+
+kubeadm reset -f || truerm -rf /root/.kube
+
+echo "Initializing Kubernetes control plane..."
+
+kubeadm init --kubernetes-version="$(kubeadm version -o short)" --skip-token-print
+
+mkdir -p /root/.kubecp -f /etc/kubernetes/admin.conf /root/.kube/configexport KUBECONFIG=/root/.kube/config
+
+echo "Installing Calico network plugin..."kubectl apply -f "${CALICO_MANIFEST}"
+
+CONTROL_PLANE="$(kubectl get nodes -o jsonpath='{.items[0].metadata.name}')"
+
+echo "Allowing workloads on the control-plane node..."kubectl taint nodes "${CONTROL_PLANE}" node-role.kubernetes.io/control-plane:NoSchedule- || true
+
+kubectl taint nodes "${CONTROL_PLANE}" node-role.kubernetes.io/master:NoSchedule- || true
+
+echo "Waiting for Kubernetes node readiness..."kubectl wait --for=condition=Ready "node/${CONTROL_PLANE}" --timeout=180s || truekubectl get nodes -o wide
+
+echo "Installing Jenkins..."
+
+curl -fsSL https://pkg.jenkins.io/debian-stable/jenkins.io-2026.key -o /etc/apt/keyrings/jenkins-keyring.asc
+
+echo "deb [signed-by=/etc/apt/keyrings/jenkins-keyring.asc] https://pkg.jenkins.io/debian-stable binary/" 
+
+/etc/apt/sources.list.d/jenkins.list
+
+apt-get updateapt-get install -y fontconfig jenkins
+
+groupadd -f dockerusermod -aG docker jenkins
+
+systemctl daemon-reloadsystemctl enable --now jenkinssystemctl restart jenkins
+
+echo "========================================"echo "INSTALLATION COMPLETE"echo "Jenkins: http://<server-ip>:8080"echo "Initial Jenkins password:"cat /var/lib/jenkins/secrets/initialAdminPasswordecho "========================================"
